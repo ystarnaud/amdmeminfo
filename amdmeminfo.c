@@ -446,6 +446,10 @@ static gpu_t *new_device()
   d->gpu = NULL;
   d->mem = NULL;
   d->vbios = NULL;
+  d->memconfig = 0;
+  d->mem_type = 0;
+  d->mem_manufacturer = 0;
+  d->mem_model = -1;
   memset(d->bios_version, 0, 64);
   d->opencl_platform = -1;
   d->opencl_id = -1;
@@ -474,6 +478,10 @@ static void free_devices()
 
     if (d->vbios != NULL) {
       free(d->vbios);
+    }
+
+    if (d->path != NULL) {
+      free(d->path);
     }
 
     free((void *)d);
@@ -771,8 +779,14 @@ int main(int argc, char *argv[])
 
   for (pcidev = pci->devices; pcidev; pcidev = pcidev->next)
   {
+    // libpci >= 3.7 no longer fills device info during scan - request it explicitly
+    pci_fill_info(pcidev, PCI_FILL_IDENT | PCI_FILL_CLASS);
+
     if (((pcidev->device_class & 0xff00) >> 8) == PCI_BASE_CLASS_DISPLAY && pcidev->vendor_id == 0x1002) {
       is_apu = false;
+
+      // fill BAR addresses/sizes needed for the memory register scan
+      pci_fill_info(pcidev, PCI_FILL_BASES);
 
       //check for APU
       memset(buf, 0, 1024);
@@ -821,7 +835,7 @@ int main(int argc, char *argv[])
         }*/
 
         //currenty Vega GPUs do not have a memory configuration register to read
-        if (d->gpu->asic_type == CHIP_VEGA10) {
+        if (d->gpu && d->gpu->asic_type == CHIP_VEGA10) {
           d->memconfig = 0x61000000;
           d->mem_type = MEM_HBM;
           d->mem_manufacturer = 1;
@@ -926,7 +940,11 @@ int main(int argc, char *argv[])
           printf("Unknown Memory %d-%d:%s:", d->mem_manufacturer, d->mem_model, mem_type_label[0]);
         }
 
-        printf("%s", amd_asic_name[d->gpu->asic_type]);
+        if (d->gpu && d->gpu->vendor_id != 0) {
+          printf("%s", amd_asic_name[d->gpu->asic_type]);
+        } else {
+          printf("Unknown ASIC");
+        }
 
         printf("\n");
       }
@@ -954,7 +972,13 @@ int main(int argc, char *argv[])
           printf("Memory Configuration: 0x%x\n", d->memconfig);
         }
 
-        printf("Memory Type: %s\n", mem_type_label[d->mem->type]);
+        // guard against out-of-range hardware memory type values
+        int mt = d->mem ? d->mem->type : d->mem_type;
+        if (mt < 0 || mt >= (int)(sizeof(mem_type_label)/sizeof(mem_type_label[0]))) {
+          mt = 0;
+        }
+
+        printf("Memory Type: %s\n", mem_type_label[mt]);
         printf("Memory Model: ");
 
         if (d->mem && d->mem->manufacturer != 0) {
